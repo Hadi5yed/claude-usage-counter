@@ -36,6 +36,20 @@ async function draw($: EngineInterface, reading: Reading) {
   $.ui.status(parts.length > 0 ? parts.join('  ·  ') : 'Usage: shows after the first reply')
 }
 
+// Shares the figures with the taskbar app in tray/, which reads this file.
+async function save($: EngineInterface, reading: Reading) {
+  if (reading.limits.length === 0) return
+  const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))
+  if (home === undefined) return
+  const snapshot = {
+    updatedAt: new Date(await $.clock.now()).toISOString(),
+    limits: reading.limits,
+    contextPercent: reading.context?.percent ?? null,
+  }
+
+  await $.fs.write(`${home}/.claude/usage-counter/usage.json`, JSON.stringify(snapshot, null, 2))
+}
+
 export const register: Register = on => {
   const reading: Reading = { limits: [] }
   const warned = new Set<string>()
@@ -46,6 +60,7 @@ export const register: Register = on => {
     reading.limits = usage.rateLimits
     reading.context = usage.context
     await draw($, reading)
+    await save($, reading)
     $.clock.every(60_000, () => draw($, reading))
 
     return result
@@ -55,6 +70,7 @@ export const register: Register = on => {
     reading.limits = e.rateLimits
     reading.context = e.context
     await draw($, reading)
+    await save($, reading)
 
     for (const l of reading.limits) {
       for (const at of WARN_AT) {

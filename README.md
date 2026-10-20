@@ -32,9 +32,23 @@ claude plugin install usage-counter --marketplace Hadi5yed/claude-usage-counter
 
 In the Claude desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `Hadi5yed/claude-usage-counter`, then **Add plugin**.
 
+## Taskbar icons (Windows)
+
+`tray/` holds a small companion app that shows the same figures in the Windows notification area, the way HWiNFO shows sensor readings: one icon for the 5-hour limit and one for the weekly limit, each a number that turns orange at 70% and red at 90%. Hover an icon for the reset countdown; right-click for Refresh and Exit.
+
+The mod saves its latest figures to `%USERPROFILE%\.claude\usage-counter\usage.json` and the app reads that file every 15 seconds, so it updates whenever a Claude Code session gets a reply. Usage on claude.ai counts against the same limits and shows up at the next Claude Code reply.
+
+After installing the mod, clone this repository and, from its folder, run:
+
+```bash
+powershell -ExecutionPolicy Bypass -File tray/install.ps1 -Startup
+```
+
+`-Startup` also starts it each time you sign in to Windows; leave it off to run it just this once. `-Uninstall` stops it and removes the sign-in entry. Windows may put new icons in the `^` overflow: drag them onto the taskbar to keep them in view.
+
 ## Privacy
 
-Everything stays local: the mod reads the usage figures Claude Code already has and makes no network requests.
+Everything stays local: the mod reads the usage figures Claude Code already has, writes them to one file in your user folder, and makes no network requests.
 
 ## License
 
