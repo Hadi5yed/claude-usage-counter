@@ -1,5 +1,7 @@
 # Claude Usage Counter
 
+![Claude Usage Counter: usage icons in the Windows taskbar and usage in the Claude Code status line](docs/preview.png)
+
 A Claude Code mod that keeps your plan usage on screen, in the terminal and in the Claude desktop app's Code tab:
 
 ```
