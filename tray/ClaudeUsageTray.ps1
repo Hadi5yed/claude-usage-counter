@@ -14,7 +14,8 @@ public static extern bool SetProcessDPIAware();
 [ClaudeUsage.Native]::SetProcessDPIAware() | Out-Null
 
 $created = $false
-$mutex = New-Object System.Threading.Mutex($true, 'Local\ClaudeUsageTray', [ref]$created)
+# ::new, not New-Object: New-Object never writes back through [ref].
+$mutex = [System.Threading.Mutex]::new($true, 'Local\ClaudeUsageTray', [ref]$created)
 if (-not $created) { exit }
 
 $UsageFile = Join-Path $env:USERPROFILE '.claude\usage-counter\usage.json'
