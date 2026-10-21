@@ -13,15 +13,129 @@ public static extern bool SetProcessDPIAware();
 # Sharp icons on scaled displays: SmallIconSize then reports the real tray size.
 [ClaudeUsage.Native]::SetProcessDPIAware() | Out-Null
 
+# A tray icon registered under its own GUID. WinForms' NotifyIcon has no GUID,
+# so Windows files every icon of powershell.exe under one entry and they pin
+# and unpin together; with a GUID each icon is its own entry in the overflow
+# and in Settings > Personalization > Taskbar > Other system tray icons.
+Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+namespace ClaudeUsage {
+    public class TrayIcon : NativeWindow, IDisposable {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct NotifyIconData {
+            public int cbSize; public IntPtr hWnd; public int uID; public int uFlags; public int uCallbackMessage; public IntPtr hIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+            public int dwState; public int dwStateMask;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+            public int uVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+            public int dwInfoFlags; public Guid guidItem; public IntPtr hBalloonIcon;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern bool Shell_NotifyIcon(int message, ref NotifyIconData data);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int RegisterWindowMessage(string name);
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+
+        const int NIM_ADD = 0, NIM_MODIFY = 1, NIM_DELETE = 2, NIM_SETVERSION = 4;
+        const int NIF_MESSAGE = 0x1, NIF_ICON = 0x2, NIF_TIP = 0x4, NIF_GUID = 0x20, NIF_SHOWTIP = 0x80;
+        const int WM_CONTEXTMENU = 0x7B, WM_TRAY = 0x8001;
+        static readonly int WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
+
+        readonly Guid id;
+        readonly int fallbackId;
+        bool useGuid = true, isAdded;
+        Icon icon;
+        string tip = "";
+        public ContextMenuStrip Menu;
+
+        public TrayIcon(Guid id, int fallbackId) {
+            this.id = id;
+            this.fallbackId = fallbackId;
+            CreateHandle(new CreateParams());
+        }
+
+        NotifyIconData Data(int flags) {
+            var d = new NotifyIconData();
+            d.cbSize = Marshal.SizeOf(typeof(NotifyIconData));
+            d.hWnd = Handle;
+            d.uID = fallbackId;
+            d.uFlags = flags | (useGuid ? NIF_GUID : 0);
+            d.guidItem = useGuid ? id : Guid.Empty;
+            d.uCallbackMessage = WM_TRAY;
+            d.hIcon = icon != null ? icon.Handle : IntPtr.Zero;
+            d.szTip = tip;
+            d.uVersion = 4;
+            return d;
+        }
+
+        public void Update(Icon newIcon, string newTip) {
+            var old = icon;
+            icon = newIcon;
+            tip = newTip ?? "";
+            var d = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
+            if (!isAdded || !Shell_NotifyIcon(NIM_MODIFY, ref d)) Add();
+            if (old != null && old != icon) old.Dispose();
+        }
+
+        void Add() {
+            // A crashed run can leave this GUID registered; clear it first.
+            var stale = Data(0);
+            Shell_NotifyIcon(NIM_DELETE, ref stale);
+            var d = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
+            isAdded = Shell_NotifyIcon(NIM_ADD, ref d);
+            if (!isAdded && useGuid) {
+                // Windows ties a GUID to one program's path; elsewhere fall back to an ID.
+                useGuid = false;
+                d = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
+                isAdded = Shell_NotifyIcon(NIM_ADD, ref d);
+            }
+            if (isAdded) Shell_NotifyIcon(NIM_SETVERSION, ref d);
+        }
+
+        protected override void WndProc(ref Message m) {
+            if (m.Msg == WM_TRAY) {
+                if (((int)m.LParam.ToInt64() & 0xFFFF) == WM_CONTEXTMENU && Menu != null) {
+                    SetForegroundWindow(Handle);
+                    Menu.Show(Cursor.Position);
+                }
+                return;
+            }
+            if (m.Msg == WM_TASKBARCREATED) {
+                // Explorer restarted: the taskbar forgot every icon.
+                isAdded = false;
+                if (icon != null) Add();
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        public void Dispose() {
+            if (isAdded) {
+                var d = Data(0);
+                Shell_NotifyIcon(NIM_DELETE, ref d);
+                isAdded = false;
+            }
+            if (icon != null) icon.Dispose();
+            DestroyHandle();
+        }
+    }
+}
+'@
+
 $created = $false
 # ::new, not New-Object: New-Object never writes back through [ref].
 $mutex = [System.Threading.Mutex]::new($true, 'Local\ClaudeUsageTray', [ref]$created)
 if (-not $created) { exit }
 
 $UsageFile = Join-Path $env:USERPROFILE '.claude\usage-counter\usage.json'
+# Each GUID is that icon's identity to Windows; never reuse or change them.
 $Windows = @(
-    @{ Kind = 'five_hour'; Label = '5-hour' },
-    @{ Kind = 'seven_day'; Label = 'Weekly' }
+    @{ Kind = 'five_hour'; Label = '5-hour'; Id = [guid]'1068662a-eb87-436f-b76c-ee8bd273cdd2'; FallbackId = 1 },
+    @{ Kind = 'seven_day'; Label = 'Weekly'; Id = [guid]'7495279c-71b1-47dc-9e25-e1bd2a2df00e'; FallbackId = 2 }
 )
 
 function Get-Countdown([string]$resetsAt) {
@@ -38,23 +152,30 @@ function New-NumberIcon([string]$text, [System.Drawing.Color]$back) {
     $size = [System.Windows.Forms.SystemInformation]::SmallIconSize.Width
     $bitmap = New-Object System.Drawing.Bitmap($size, $size)
     $g = [System.Drawing.Graphics]::FromImage($bitmap)
-    $g.SmoothingMode = 'AntiAlias'
-    $g.TextRenderingHint = 'AntiAliasGridFit'
     $brush = New-Object System.Drawing.SolidBrush($back)
+    # Unsmoothed fill: hard, fully opaque edges rather than a soft half-pixel rim.
     $g.FillRectangle($brush, 0, 0, $size, $size)
 
-    $em = if ($text.Length -ge 3) { $size * 0.42 } else { $size * 0.62 }
-    $font = New-Object System.Drawing.Font('Segoe UI', $em, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-    $format = New-Object System.Drawing.StringFormat
-    $format.Alignment = 'Center'
-    $format.LineAlignment = 'Center'
-    $rect = New-Object System.Drawing.RectangleF(0, 0, $size, ($size + 1))
-    $g.DrawString($text, $font, [System.Drawing.Brushes]::White, $rect, $format)
+    # The digits as outlines, scaled to fill the square and centred on their
+    # ink, which reads larger and sharper at 16-24 px than drawn text.
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $family = New-Object System.Drawing.FontFamily('Segoe UI')
+    $path.AddString($text, $family, [int][System.Drawing.FontStyle]::Bold, 100, (New-Object System.Drawing.PointF(0, 0)), [System.Drawing.StringFormat]::GenericTypographic)
+    $ink = $path.GetBounds()
+    $scale = [Math]::Min($size * 0.84 / $ink.Width, $size * 0.62 / $ink.Height)
+    $matrix = New-Object System.Drawing.Drawing2D.Matrix
+    $matrix.Translate([Math]::Round(($size - $ink.Width * $scale) / 2), [Math]::Round(($size - $ink.Height * $scale) / 2))
+    $matrix.Scale($scale, $scale)
+    $matrix.Translate(-$ink.X, -$ink.Y)
+    $path.Transform($matrix)
+    $g.SmoothingMode = 'AntiAlias'
+    $g.PixelOffsetMode = 'HighQuality'
+    $g.FillPath([System.Drawing.Brushes]::White, $path)
 
     $handle = $bitmap.GetHicon()
     $icon = [System.Drawing.Icon]::FromHandle($handle).Clone()
     [ClaudeUsage.Native]::DestroyIcon($handle) | Out-Null
-    $font.Dispose(); $brush.Dispose(); $g.Dispose(); $bitmap.Dispose()
+    $matrix.Dispose(); $family.Dispose(); $path.Dispose(); $brush.Dispose(); $g.Dispose(); $bitmap.Dispose()
     return $icon
 }
 
@@ -67,14 +188,13 @@ function Get-LevelColor([double]$percent) {
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $menu.Items.Add('Refresh', $null, { Update-Icons }) | Out-Null
 $menu.Items.Add('Exit', $null, {
-    foreach ($w in $Windows) { $w.Tray.Visible = $false; $w.Tray.Dispose() }
+    foreach ($w in $Windows) { $w.Tray.Dispose() }
     [System.Windows.Forms.Application]::Exit()
 }) | Out-Null
 
 foreach ($w in $Windows) {
-    $w.Tray = New-Object System.Windows.Forms.NotifyIcon
-    $w.Tray.ContextMenuStrip = $menu
-    $w.Tray.Visible = $true
+    $w.Tray = New-Object ClaudeUsage.TrayIcon($w.Id, $w.FallbackId)
+    $w.Tray.Menu = $menu
 }
 
 function Update-Icons {
@@ -108,11 +228,8 @@ function Update-Icons {
             }
         } catch { }
 
-        $old = $w.Tray.Icon
-        $w.Tray.Icon = New-NumberIcon $text $back
-        if ($old) { $old.Dispose() }
-        # NotifyIcon tooltips are capped at 63 characters.
-        $w.Tray.Text = if ($tip.Length -gt 63) { $tip.Substring(0, 63) } else { $tip }
+        # Tooltips hold 127 characters.
+        $w.Tray.Update((New-NumberIcon $text $back), $(if ($tip.Length -gt 127) { $tip.Substring(0, 127) } else { $tip }))
     }
 }
 

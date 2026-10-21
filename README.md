@@ -46,7 +46,7 @@ After installing the mod, clone this repository and, from its folder, run:
 powershell -ExecutionPolicy Bypass -File tray/install.ps1 -Startup
 ```
 
-`-Startup` also starts it each time you sign in to Windows; leave it off to run it just this once. `-Uninstall` stops it and removes the sign-in entry. Windows may put new icons in the `^` overflow: drag them onto the taskbar to keep them in view.
+`-Startup` also starts it each time you sign in to Windows; leave it off to run it just this once. `-Uninstall` stops it and removes the sign-in entry. Windows may put new icons in the `^` overflow: drag them onto the taskbar to keep them in view. Each icon is registered with Windows separately, so you can pin just the 5-hour one, just the weekly one, or both (also under Settings > Personalization > Taskbar > Other system tray icons).
 
 ## Privacy
 
