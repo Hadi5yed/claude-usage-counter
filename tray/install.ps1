@@ -8,8 +8,9 @@ $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sc
 
 if ($Uninstall) {
     Remove-Item $shortcut -ErrorAction SilentlyContinue
+    # Only the tray app itself: started with -File on this exact script.
     Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
-        Where-Object { $_.CommandLine -like '*ClaudeUsageTray.ps1*' } |
+        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.TrimEnd().EndsWith("-File `"$script`"") } |
         ForEach-Object { Stop-Process -Id $_.ProcessId }
     Write-Output 'Claude Usage Tray removed.'
     return

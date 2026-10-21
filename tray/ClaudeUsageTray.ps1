@@ -25,8 +25,9 @@ $Windows = @(
 )
 
 function Get-Countdown([string]$resetsAt) {
-    if (-not $resetsAt) { return '' }
-    $left = [DateTimeOffset]::Parse($resetsAt) - [DateTimeOffset]::Now
+    $at = [DateTimeOffset]::MinValue
+    if (-not $resetsAt -or -not [DateTimeOffset]::TryParse($resetsAt, [ref]$at)) { return '' }
+    $left = $at - [DateTimeOffset]::Now
     if ($left.TotalMinutes -le 0) { return 'reset' }
     if ($left.Days -gt 0) { return 'resets in {0}d {1}h' -f $left.Days, $left.Hours }
     if ($left.Hours -gt 0) { return 'resets in {0}h {1}m' -f $left.Hours, $left.Minutes }
@@ -78,29 +79,34 @@ foreach ($w in $Windows) {
 
 function Update-Icons {
     $data = $null
-    if (Test-Path $UsageFile) {
+    # The file is the mod's, but read it as untrusted: small, valid JSON only.
+    if ((Test-Path $UsageFile -PathType Leaf) -and (Get-Item $UsageFile).Length -le 65536) {
         try { $data = Get-Content $UsageFile -Raw | ConvertFrom-Json } catch { }
     }
 
     foreach ($w in $Windows) {
-        $limit = $null
-        if ($data) { $limit = $data.limits | Where-Object { $_.kind -eq $w.Kind } | Select-Object -First 1 }
+        $text = '-'
+        $back = [System.Drawing.Color]::FromArgb(90, 90, 90)
+        $tip = "Claude $($w.Label): waiting for Claude Code to report usage"
 
-        if (-not $limit) {
-            $text = '-'
-            $back = [System.Drawing.Color]::FromArgb(90, 90, 90)
-            $tip = "Claude $($w.Label): waiting for Claude Code to report usage"
-        } else {
-            $countdown = Get-Countdown $limit.resetsAt
-            # Past its reset time, the window has started over at 0%.
-            $percent = if ($countdown -eq 'reset') { 0 } else { [Math]::Round([double]$limit.percentUsed) }
-            $text = [string]$percent
-            $back = Get-LevelColor $percent
-            $tip = "Claude $($w.Label): $percent%"
-            if ($countdown -and $countdown -ne 'reset') { $tip += ", $countdown" }
-            $updated = [DateTimeOffset]::Parse($data.updatedAt).ToLocalTime().ToString('HH:mm')
-            $tip += "`nUpdated $updated"
-        }
+        try {
+            $limit = $null
+            if ($data) { $limit = @($data.limits) | Where-Object { $_.kind -eq $w.Kind } | Select-Object -First 1 }
+            $used = 0.0
+            if ($limit -and [double]::TryParse([string]$limit.percentUsed, [ref]$used) -and -not [double]::IsNaN($used)) {
+                $countdown = Get-Countdown $limit.resetsAt
+                # Past its reset time, the window has started over at 0%.
+                $percent = if ($countdown -eq 'reset') { 0 } else { [int][Math]::Round([Math]::Min(999, [Math]::Max(0, $used))) }
+                $text = [string]$percent
+                $back = Get-LevelColor $percent
+                $tip = "Claude $($w.Label): $percent%"
+                if ($countdown -and $countdown -ne 'reset') { $tip += ", $countdown" }
+                $updated = [DateTimeOffset]::MinValue
+                if ([DateTimeOffset]::TryParse([string]$data.updatedAt, [ref]$updated)) {
+                    $tip += "`nUpdated " + $updated.ToLocalTime().ToString('HH:mm')
+                }
+            }
+        } catch { }
 
         $old = $w.Tray.Icon
         $w.Tray.Icon = New-NumberIcon $text $back
